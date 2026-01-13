@@ -1,0 +1,69 @@
+# Code Executor Agent - Example Kagenti agent that uses agent-sandbox
+# This agent can execute Python code in isolated sandboxes
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: Agent
+metadata:
+  name: code-executor-agent
+  namespace: kagenti
+  labels:
+    app.kubernetes.io/name: code-executor-agent
+    kagenti.io/type: agent
+    kagenti.io/agent-protocol: a2a
+  annotations:
+    description: "Agent that executes code in isolated sandboxes using agent-sandbox"
+spec:
+  description: "Agent that can execute Python code in secure, isolated sandboxes"
+
+  replicas: 1
+
+  imageSource:
+    image: "code-executor-agent:latest"  # Replace with your code-executor image
+
+  # Define service ports to expose
+  servicePorts:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+
+  # Complete pod template specification
+  podTemplateSpec:
+    spec:
+      # Service account with permissions to create SandboxClaims
+      serviceAccountName: code-executor-agent-sa
+      
+      containers:
+      - name: agent
+        image: "code-executor-agent:latest"
+        imagePullPolicy: IfNotPresent
+
+        # Environment variables
+        env:
+        - name: PORT
+          value: "8000"
+        - name: HOST
+          value: "0.0.0.0"
+        
+        # Sandbox configuration
+        - name: SANDBOX_TEMPLATE_NAME
+          value: "python-sandbox-template"
+        - name: SANDBOX_NAMESPACE
+          value: "kagenti"
+        - name: SANDBOX_ROUTER_URL
+          value: "http://sandbox-router-svc.kagenti.svc.cluster.local:8080"
+
+        # Ports
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+
+        # Volume mounts (if needed for persistent storage)
+        # volumeMounts:
+        # - name: workspace
+        #   mountPath: /workspace
+
+      # Volumes (if needed)
+      # volumes:
+      # - name: workspace
+      #   emptyDir: {}

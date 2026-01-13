@@ -1,0 +1,50 @@
+# MCP Server for Weather Tool
+# Note: This CRD is managed by the Stacklok ToolHive Operator
+# The MCPServer must be deployed before the agent can use it
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: weather-tool
+  namespace: kagenti
+  labels:
+    kagenti.io/framework: Python
+    kagenti.io/protocol: streamable_http
+    kagenti.io/type: tool
+    toolhive-basename: weather-tool
+spec:
+  image: "ghcr.io/kagenti/agent-examples/weather_tool:v0.0.1-alpha.3"
+  transport: streamable-http
+  port: 8000
+  targetPort: 8000
+  proxyPort: 8000
+  podTemplateSpec:
+    spec:
+      serviceAccountName: weather-tool
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: tmp-dir
+          emptyDir: {}
+      containers:
+        - name: mcp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsUser: 1000
+          env:
+            - name: PORT
+              value: "8000"
+            - name: UV_CACHE_DIR
+              value: /app/.cache/uv
+          volumeMounts:
+            - name: cache
+              mountPath: /app/.cache
+              readOnly: false
+            - name: tmp-dir
+              mountPath: /tmp
+              readOnly: false

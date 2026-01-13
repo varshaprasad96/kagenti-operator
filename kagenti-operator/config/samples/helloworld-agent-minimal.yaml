@@ -1,0 +1,42 @@
+# Minimal Agent Example - Deploy from existing image
+# This demonstrates the Agent CRD without building from source
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: Agent
+metadata:
+  name: helloworld-agent
+  namespace: kagenti
+  labels:
+    app.kubernetes.io/name: helloworld-agent
+    kagenti.io/type: agent
+    kagenti.io/agent-protocol: a2a
+spec:
+  description: "Simple Hello World agent"
+  replicas: 1
+
+  # Use existing container image (simplest approach)
+  imageSource:
+    image: "ghcr.io/kagenti/agent-examples/weather_service:v0.0.1-alpha.2"
+
+  # Define service ports to expose
+  servicePorts:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+
+  # Pod template specification
+  podTemplateSpec:
+    spec:
+      containers:
+      - name: agent
+        image: "ghcr.io/kagenti/agent-examples/weather_service:v0.0.1-alpha.2"
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "8000"
+        - name: HOST
+          value: "0.0.0.0"

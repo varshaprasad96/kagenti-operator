@@ -1,0 +1,8 @@
+# Requirements for Code Executor Agent
+# FastAPI and dependencies
+fastapi
+uvicorn
+pydantic
+
+# Agent-sandbox SDK
+git+https://github.com/kubernetes-sigs/agent-sandbox.git@main#subdirectory=clients/python/agentic-sandbox-client

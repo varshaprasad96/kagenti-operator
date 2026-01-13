@@ -1,0 +1,77 @@
+# RBAC for Code Executor Agent
+# Grants permissions to create and manage SandboxClaims and Sandboxes
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: code-executor-agent-sa
+  namespace: kagenti
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: code-executor-agent-role
+  namespace: kagenti
+rules:
+# Permissions to create and manage SandboxClaims (extensions API group)
+- apiGroups:
+  - extensions.agents.x-k8s.io
+  resources:
+  - sandboxclaims
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+# Permissions to read SandboxTemplates (extensions API group)
+- apiGroups:
+  - extensions.agents.x-k8s.io
+  resources:
+  - sandboxtemplates
+  verbs:
+  - get
+  - list
+  - watch
+# Permissions to read Sandboxes (extensions API group)
+- apiGroups:
+  - extensions.agents.x-k8s.io
+  resources:
+  - sandboxes
+  verbs:
+  - get
+  - list
+  - watch
+# Permissions to watch Sandboxes (agents API group - used by SandboxClient)
+- apiGroups:
+  - agents.x-k8s.io
+  resources:
+  - sandboxes
+  verbs:
+  - get
+  - list
+  - watch
+# Permissions to read pods (to check sandbox pod status)
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: code-executor-agent-rolebinding
+  namespace: kagenti
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: code-executor-agent-role
+subjects:
+- kind: ServiceAccount
+  name: code-executor-agent-sa
+  namespace: kagenti

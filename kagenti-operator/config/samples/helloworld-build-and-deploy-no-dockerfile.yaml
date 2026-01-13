@@ -49,13 +49,19 @@ spec:
     buildRef:
       name: helloworld-agent-build
 
+  # Define service ports to expose
+  servicePorts:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+
   # Complete pod template specification
   podTemplateSpec:
     spec:
-
       containers:
       - name: agent # use fixed name "agent" for the main container
-        image:  <will be replaced with imageSource.image above>
+        image: "registry.cr-system.svc.cluster.local:5000/helloworld-service:v0.0.1"
 
         # Environment variables
         env:
