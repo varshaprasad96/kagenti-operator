@@ -1,0 +1,113 @@
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: Agent
+metadata:
+  name: weather-agent-mlflow-odh
+  namespace: kagenti
+  labels:
+    app.kubernetes.io/name: weather-agent-mlflow-odh
+    kagenti.io/agent-protocol: a2a
+    kagenti.io/type: agent
+    kagenti.io/observability: mlflow
+  annotations:
+    description: "Weather agent with MLflow integration for ODH MLflow operator"
+spec:
+  description: "Weather agent with integrated MLflow experiment tracking (ODH)"
+  replicas: 1
+
+  imageSource:
+    image: ghcr.io/kagenti/agent-examples/weather_service:v0.0.1-alpha.2
+
+  servicePorts:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: metrics
+      port: 9090
+      protocol: TCP
+      targetPort: 9090
+
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: agent
+          image: ghcr.io/kagenti/agent-examples/weather_service:v0.0.1-alpha.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+            - containerPort: 9090
+              name: metrics
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8000"
+            - name: HOST
+              value: "0.0.0.0"
+
+            # MLflow configuration for ODH operator service
+            - name: MLFLOW_TRACKING_URI
+              value: "https://mlflow.opendatahub.svc.cluster.local:8443"
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: "kagenti-weather-agent"
+            - name: MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING
+              value: "true"
+            - name: MLFLOW_TRACKING_INSECURE_TLS
+              value: "true"
+
+            # OpenTelemetry for tracing
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.kagenti-system.svc.cluster.local:8335"
+            - name: OTEL_SERVICE_NAME
+              value: "weather-agent-mlflow-odh"
+
+            # LLM configuration
+            - name: LLM_API_BASE
+              value: "http://vllm.vllm.svc.cluster.local:8000/v1"
+            - name: LLM_API_KEY
+              value: "dummy"
+            - name: LLM_MODEL
+              value: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+
+            # MCP tool connection
+            - name: MCP_URL
+              value: "http://mcp-weather-tool-proxy:8000/mcp"
+
+            # Auth config
+            - name: KEYCLOAK_URL
+              value: "http://keycloak.keycloak.svc.cluster.local:8080"
+            - name: CLIENT_NAME
+              value: "kagenti/weather-service-mlflow-odh"
+            - name: CLIENT_ID
+              value: "spiffe://localtest.me/sa/weather-service-mlflow-odh"
+            - name: NAMESPACE
+              value: "kagenti"
+
+            # Cache config
+            - name: UV_CACHE_DIR
+              value: "/app/.cache/uv"
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          volumeMounts:
+            - name: cache
+              mountPath: /app/.cache
+            - name: marvin
+              mountPath: /.marvin
+            - name: shared-data
+              mountPath: /shared
+
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: marvin
+          emptyDir: {}
+        - name: shared-data
+          emptyDir: {}

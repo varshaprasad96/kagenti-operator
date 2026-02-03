@@ -1,0 +1,96 @@
+---
+# ServiceAccount for the agent
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: simple-mlflow-agent
+  namespace: kagenti
+---
+# ClusterRoleBinding to allow the agent to access MLflow
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: simple-mlflow-agent-mlflow-access
+subjects:
+  - kind: ServiceAccount
+    name: simple-mlflow-agent
+    namespace: kagenti
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+---
+# Deployment for the simple MLflow agent
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-mlflow-agent
+  namespace: kagenti
+  labels:
+    app: simple-mlflow-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simple-mlflow-agent
+  template:
+    metadata:
+      labels:
+        app: simple-mlflow-agent
+    spec:
+      serviceAccountName: simple-mlflow-agent
+      containers:
+        - name: agent
+          image: simple-mlflow-agent:v1
+          imagePullPolicy: Never  # Image is loaded locally via kind load
+          env:
+            - name: PORT
+              value: "8000"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: MLFLOW_TRACKING_URI
+              value: "https://mlflow.opendatahub.svc.cluster.local:8443/mlflow"
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: "simple-mlflow-agent"
+            - name: MLFLOW_TRACKING_INSECURE_TLS
+              value: "true"
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+# Service for the agent
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-mlflow-agent
+  namespace: kagenti
+  labels:
+    app: simple-mlflow-agent
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app: simple-mlflow-agent

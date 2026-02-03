@@ -1,0 +1,58 @@
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: Agent
+metadata:
+  name: simple-agent-mlflow
+  namespace: kagenti
+  labels:
+    app.kubernetes.io/name: simple-agent-mlflow
+    kagenti.io/agent-protocol: a2a
+    kagenti.io/type: agent
+    kagenti.io/observability: mlflow
+  annotations:
+    description: "Simple agent with MLflow integration (no MCP)"
+spec:
+  description: "Simple agent with MLflow tracking and vLLM backend"
+  replicas: 1
+
+  imageSource:
+    image: quay.io/vnarsing/simple-agent:latest
+
+  servicePorts:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: agent
+          image: quay.io/vnarsing/simple-agent:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8000"
+            - name: HOST
+              value: "0.0.0.0"
+
+            # MLflow configuration
+            - name: MLFLOW_TRACKING_URI
+              value: "https://mlflow.opendatahub.svc.cluster.local:8443"
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: "kagenti-simple-agent"
+            - name: MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING
+              value: "true"
+            - name: MLFLOW_TRACKING_INSECURE_TLS
+              value: "true"
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

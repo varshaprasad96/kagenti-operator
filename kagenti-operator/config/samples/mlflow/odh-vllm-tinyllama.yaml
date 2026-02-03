@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-tinyllama
+  namespace: kagenti
+  labels:
+    app: vllm-tinyllama
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-tinyllama
+  template:
+    metadata:
+      labels:
+        app: vllm-tinyllama
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.6.3
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--model=TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            - "--host=0.0.0.0"
+            - "--port=8000"
+            - "--device=cpu"
+            - "--dtype=float32"
+            - "--max-model-len=2048"
+          env:
+            - name: HOME
+              value: /tmp
+            - name: HF_HOME
+              value: /tmp/hf
+            - name: TRANSFORMERS_CACHE
+              value: /tmp/hf
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+            # Prevent vLLM from reading the injected VLLM_PORT service env.
+            - name: VLLM_PORT
+              value: "0"
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              cpu: "1"
+              memory: "4Gi"
+            limits:
+              cpu: "2"
+              memory: "8Gi"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  namespace: kagenti
+  labels:
+    app: vllm-tinyllama
+spec:
+  selector:
+    app: vllm-tinyllama
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

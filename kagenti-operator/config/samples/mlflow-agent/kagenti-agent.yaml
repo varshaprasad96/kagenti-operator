@@ -1,0 +1,91 @@
+# Simple MLflow Agent - Deployed via Kagenti Operator
+# This uses the Kagenti Agent CRD for proper agent management
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: Agent
+metadata:
+  name: simple-mlflow-agent
+  namespace: kagenti
+  labels:
+    app.kubernetes.io/name: simple-mlflow-agent
+    kagenti.io/type: agent
+  annotations:
+    description: "Simple agent demonstrating MLflow integration for metrics tracking"
+spec:
+  description: "A simple agent that logs request metrics to MLflow"
+  replicas: 1
+
+  # Use pre-built image (loaded via kind load)
+  imageSource:
+    image: simple-mlflow-agent:v2
+
+  # Service ports
+  servicePorts:
+    - name: http
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+
+  # Pod template
+  podTemplateSpec:
+    spec:
+      serviceAccountName: simple-mlflow-agent
+      containers:
+        - name: agent
+          image: simple-mlflow-agent:v2
+          imagePullPolicy: Never  # Image loaded locally via kind
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8000"
+            - name: HOST
+              value: "0.0.0.0"
+            # MLflow configuration
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow.mlflow-simple.svc.cluster.local:5000"
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: "kagenti-simple-mlflow-agent"
+            - name: MLFLOW_TRACKING_INSECURE_TLS
+              value: "false"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+# ServiceAccount for the agent
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: simple-mlflow-agent
+  namespace: kagenti
+---
+# ClusterRoleBinding for MLflow access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: simple-mlflow-agent-mlflow-access
+subjects:
+  - kind: ServiceAccount
+    name: simple-mlflow-agent
+    namespace: kagenti
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
