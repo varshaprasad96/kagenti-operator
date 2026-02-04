@@ -1,0 +1,273 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: judge-eval-script
+  namespace: kagenti
+data:
+  evaluate.py: |
+    #!/usr/bin/env python3
+    """
+    Agent-to-Agent Evaluation with LLM-as-a-Judge.
+    
+    - Target Agent: The agent being evaluated (simple-agent-mlflow-demo)
+    - Judge Agent: Uses vLLM to evaluate response quality
+    - Results logged to ODH MLflow
+    """
+    import os
+    import time
+    import json
+    import httpx
+    import mlflow
+    
+    # Configuration
+    TARGET_AGENT_URL = "http://simple-agent-mlflow-demo.kagenti.svc.cluster.local:8000"
+    JUDGE_LLM_URL = "http://vllm.vllm.svc.cluster.local:8000/v1"
+    JUDGE_MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    
+    MLFLOW_TRACKING_URI = "https://mlflow.opendatahub.svc.cluster.local:8443"
+    MLFLOW_WORKSPACE = "opendatahub"
+    EXPERIMENT_NAME = "kagenti-agent-to-agent-eval"
+    
+    os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
+    
+    def call_target_agent(message: str) -> str:
+        """Call the target agent being evaluated."""
+        try:
+            response = httpx.post(
+                f"{TARGET_AGENT_URL}/chat",
+                json={"message": message},
+                timeout=30.0
+            )
+            response.raise_for_status()
+            return response.json().get("response", "No response")
+        except Exception as e:
+            return f"Error: {e}"
+    
+    def call_judge_llm(prompt: str) -> str:
+        """Call the Judge LLM to evaluate a response."""
+        try:
+            response = httpx.post(
+                f"{JUDGE_LLM_URL}/chat/completions",
+                json={
+                    "model": JUDGE_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 200,
+                    "temperature": 0.1,
+                },
+                timeout=60.0
+            )
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            return f"Judge Error: {e}"
+    
+    def judge_response(question: str, response: str, criteria: str) -> dict:
+        """Have the Judge LLM evaluate a response."""
+        prompt = (
+            f"You are an AI quality evaluator. Rate the following response on a scale of 1-5.\n\n"
+            f"Question asked: {question}\n"
+            f"Agent response: {response}\n"
+            f"Evaluation criteria: {criteria}\n\n"
+            f"Provide your rating as a single number (1-5) followed by a brief explanation.\n"
+            f"Format - RATING then REASON"
+        )
+        
+        judge_output = call_judge_llm(prompt)
+        
+        # Parse rating (default to 3 if parsing fails)
+        rating = 3
+        reason = judge_output
+        try:
+            # Try to find a number 1-5 in the response
+            for char in judge_output:
+                if char.isdigit() and int(char) >= 1 and int(char) <= 5:
+                    rating = int(char)
+                    break
+            reason = judge_output[:200]
+        except:
+            pass
+        
+        return {
+            "rating": rating,
+            "reason": reason,
+            "raw_output": judge_output[:300]
+        }
+    
+    # Evaluation dataset with criteria
+    eval_dataset = [
+        {
+            "question": "Hello, how are you?",
+            "criteria": "Is the response friendly and appropriate for a greeting?",
+            "topic": "greeting"
+        },
+        {
+            "question": "What is machine learning?",
+            "criteria": "Does the response demonstrate knowledge about the topic?",
+            "topic": "knowledge"
+        },
+        {
+            "question": "Can you help me with a task?",
+            "criteria": "Is the response helpful and offers assistance?",
+            "topic": "helpfulness"
+        },
+    ]
+    
+    def setup_mlflow():
+        from mlflow.tracking.request_header.abstract_request_header_provider import RequestHeaderProvider
+        from mlflow.tracking.request_header import registry as header_registry
+        
+        class WorkspaceHeaderProvider(RequestHeaderProvider):
+            def in_context(self): return True
+            def request_headers(self):
+                return {"mlflow-workspace": MLFLOW_WORKSPACE, "x-mlflow-workspace": MLFLOW_WORKSPACE}
+        
+        header_registry._request_header_provider_registry.register(WorkspaceHeaderProvider)
+        
+        with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
+            os.environ["MLFLOW_TRACKING_TOKEN"] = f.read().strip()
+        
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_experiment(EXPERIMENT_NAME)
+        print(f"✅ MLflow configured: {MLFLOW_TRACKING_URI}")
+    
+    def run_agent_to_agent_eval():
+        """Run evaluation where Judge Agent evaluates Target Agent."""
+        
+        print("\n" + "=" * 60)
+        print("🤖 Agent-to-Agent Evaluation")
+        print("=" * 60)
+        print(f"   Target Agent: {TARGET_AGENT_URL}")
+        print(f"   Judge LLM: {JUDGE_LLM_URL}")
+        print("=" * 60)
+        
+        results = []
+        total_rating = 0
+        
+        with mlflow.start_run(run_name="agent-to-agent-eval") as parent_run:
+            mlflow.log_param("target_agent", TARGET_AGENT_URL)
+            mlflow.log_param("judge_llm", JUDGE_LLM_URL)
+            mlflow.log_param("judge_model", JUDGE_MODEL)
+            mlflow.log_param("num_test_cases", len(eval_dataset))
+            
+            for i, test_case in enumerate(eval_dataset, 1):
+                question = test_case["question"]
+                criteria = test_case["criteria"]
+                topic = test_case["topic"]
+                
+                print(f"\n[{i}/{len(eval_dataset)}] 📤 Question: {question}")
+                
+                # Step 1: Get response from Target Agent
+                start_time = time.time()
+                target_response = call_target_agent(question)
+                latency = time.time() - start_time
+                print(f"    🎯 Target Agent: {target_response[:60]}...")
+                
+                # Step 2: Have Judge Agent evaluate the response
+                print(f"    ⚖️ Judge evaluating...")
+                judgment = judge_response(question, target_response, criteria)
+                rating = judgment["rating"]
+                reason = judgment["reason"][:100]
+                total_rating += rating
+                
+                print(f"    📊 Rating: {rating}/5 - {reason}...")
+                
+                # Log to MLflow as nested run
+                with mlflow.start_run(run_name=f"eval_{i}_{topic}", nested=True):
+                    mlflow.log_param("question", question[:100])
+                    mlflow.log_param("criteria", criteria[:100])
+                    mlflow.log_param("topic", topic)
+                    mlflow.log_param("target_response", target_response[:200])
+                    mlflow.log_param("judge_reason", reason[:200])
+                    
+                    mlflow.log_metric("latency_seconds", round(latency, 3))
+                    mlflow.log_metric("judge_rating", rating)
+                    mlflow.log_metric("response_length", len(target_response))
+                
+                results.append({
+                    "question": question,
+                    "response": target_response[:100],
+                    "rating": rating,
+                    "reason": reason
+                })
+            
+            # Log aggregate metrics
+            avg_rating = total_rating / len(eval_dataset)
+            mlflow.log_metric("avg_judge_rating", round(avg_rating, 2))
+            mlflow.log_metric("total_test_cases", len(eval_dataset))
+            mlflow.log_param("completed", "true")
+        
+        # Print summary
+        print("\n" + "=" * 60)
+        print("📊 Agent-to-Agent Evaluation Summary")
+        print("=" * 60)
+        print(f"   Test Cases:      {len(eval_dataset)}")
+        print(f"   Avg Judge Rating: {avg_rating:.2f}/5")
+        print("=" * 60)
+        
+        for r in results:
+            stars = "⭐" * r["rating"]
+            print(f"\n   Q: {r['question'][:40]}...")
+            print(f"   Rating: {stars} ({r['rating']}/5)")
+        
+        print("\n" + "=" * 60)
+        print(f"✅ Results logged to: {EXPERIMENT_NAME}")
+    
+    if __name__ == "__main__":
+        print("=" * 60)
+        print("Kagenti Agent-to-Agent Evaluation")
+        print("=" * 60)
+        
+        # Test connectivity
+        print("\n🔍 Testing Target Agent...")
+        test = call_target_agent("test")
+        if "Error" in test:
+            print(f"⚠️ Target Agent issue: {test}")
+        else:
+            print(f"✅ Target Agent OK: {test[:50]}...")
+        
+        print("\n🔍 Testing Judge LLM...")
+        judge_test = call_judge_llm("Say 'OK' if you can hear me.")
+        if "Error" in judge_test:
+            print(f"⚠️ Judge LLM issue: {judge_test}")
+        else:
+            print(f"✅ Judge LLM OK: {judge_test[:50]}...")
+        
+        setup_mlflow()
+        
+        try:
+            run_agent_to_agent_eval()
+        except Exception as e:
+            import traceback
+            print(f"\n❌ Evaluation failed: {e}")
+            traceback.print_exc()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agent-judge-eval
+  namespace: kagenti
+spec:
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: simple-agent-mlflow-demo
+      restartPolicy: Never
+      containers:
+        - name: evaluate
+          image: registry.access.redhat.com/ubi9/python-312:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              pip install --quiet mlflow httpx
+              python /scripts/evaluate.py
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+      volumes:
+        - name: script
+          configMap:
+            name: judge-eval-script

@@ -1,0 +1,36 @@
+# RBAC for the demo agent to access MLflow
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: simple-agent-mlflow-demo
+  namespace: kagenti
+---
+# Grant namespace list permission (required for MLflow workspaces)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: simple-agent-mlflow-demo-namespace-list
+subjects:
+  - kind: ServiceAccount
+    name: simple-agent-mlflow-demo
+    namespace: kagenti
+roleRef:
+  kind: ClusterRole
+  name: mlflow-workspace-access
+  apiGroup: rbac.authorization.k8s.io
+---
+# Grant admin access to opendatahub namespace for MLflow
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: simple-agent-mlflow-demo-admin
+  namespace: opendatahub
+subjects:
+  - kind: ServiceAccount
+    name: simple-agent-mlflow-demo
+    namespace: kagenti
+roleRef:
+  kind: ClusterRole
+  name: admin
+  apiGroup: rbac.authorization.k8s.io

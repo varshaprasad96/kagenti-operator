@@ -1,0 +1,231 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: evaluate-script
+  namespace: kagenti
+data:
+  evaluate.py: |
+    #!/usr/bin/env python3
+    """
+    Agent evaluation script for ODH MLflow.
+    
+    Uses custom evaluation logic that logs results to ODH MLflow
+    without requiring the tracing API that mlflow.genai.evaluate() needs.
+    """
+    import os
+    import time
+    import httpx
+    import mlflow
+    
+    # Configuration for in-cluster
+    AGENT_URL = "http://simple-agent-mlflow-demo.kagenti.svc.cluster.local:8000"
+    MLFLOW_TRACKING_URI = "https://mlflow.opendatahub.svc.cluster.local:8443"
+    MLFLOW_WORKSPACE = "opendatahub"
+    EXPERIMENT_NAME = "kagenti-agent-evaluation"
+    
+    os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
+    
+    def call_agent(message: str) -> str:
+        try:
+            response = httpx.post(f"{AGENT_URL}/chat", json={"message": message}, timeout=30.0)
+            response.raise_for_status()
+            return response.json().get("response", "No response")
+        except Exception as e:
+            return f"Error: {e}"
+    
+    # Evaluation dataset
+    eval_dataset = [
+        {"question": "Hello, how are you?", "expected_topic": "greeting"},
+        {"question": "What is MLflow?", "expected_topic": "knowledge"},
+        {"question": "What is 2 + 2?", "expected_topic": "math"},
+        {"question": "Explain Kubernetes in one sentence.", "expected_topic": "tech"},
+        {"question": "What is the capital of France?", "expected_topic": "geography"},
+    ]
+    
+    # Scorer functions
+    def score_response_length(response: str) -> int:
+        return len(response) if response else 0
+    
+    def score_word_count(response: str) -> int:
+        return len(response.split()) if response else 0
+    
+    def score_has_error(response: str) -> bool:
+        return "error" in response.lower() if response else True
+    
+    def score_is_responsive(response: str) -> bool:
+        return len(response) > 20 if response else False
+    
+    def score_latency(start_time: float, end_time: float) -> float:
+        return round(end_time - start_time, 3)
+    
+    def setup_mlflow():
+        from mlflow.tracking.request_header.abstract_request_header_provider import RequestHeaderProvider
+        from mlflow.tracking.request_header import registry as header_registry
+        
+        class WorkspaceHeaderProvider(RequestHeaderProvider):
+            def in_context(self): return True
+            def request_headers(self):
+                return {"mlflow-workspace": MLFLOW_WORKSPACE, "x-mlflow-workspace": MLFLOW_WORKSPACE}
+        
+        header_registry._request_header_provider_registry.register(WorkspaceHeaderProvider)
+        
+        # Read k8s token for auth
+        with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
+            os.environ["MLFLOW_TRACKING_TOKEN"] = f.read().strip()
+        
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_experiment(EXPERIMENT_NAME)
+        print(f"✅ MLflow configured: {MLFLOW_TRACKING_URI}")
+        print(f"✅ Experiment: {EXPERIMENT_NAME}")
+    
+    def run_evaluation():
+        """Run evaluation and log results to ODH MLflow."""
+        
+        print("\n" + "=" * 60)
+        print("🚀 Starting Agent Evaluation")
+        print("=" * 60)
+        
+        results = []
+        total_latency = 0
+        error_count = 0
+        
+        # Create a parent run for the evaluation
+        with mlflow.start_run(run_name="agent-evaluation-run") as parent_run:
+            mlflow.log_param("agent_url", AGENT_URL)
+            mlflow.log_param("num_test_cases", len(eval_dataset))
+            mlflow.log_param("evaluation_type", "custom_scorers")
+            
+            for i, test_case in enumerate(eval_dataset, 1):
+                question = test_case["question"]
+                expected_topic = test_case["expected_topic"]
+                
+                print(f"\n[{i}/{len(eval_dataset)}] 📤 {question}")
+                
+                # Time the request
+                start_time = time.time()
+                response = call_agent(question)
+                end_time = time.time()
+                
+                # Calculate scores
+                latency = score_latency(start_time, end_time)
+                response_length = score_response_length(response)
+                word_count = score_word_count(response)
+                has_error = score_has_error(response)
+                is_responsive = score_is_responsive(response)
+                
+                total_latency += latency
+                if has_error:
+                    error_count += 1
+                
+                # Log as nested run
+                with mlflow.start_run(run_name=f"test_{i}_{expected_topic}", nested=True):
+                    # Log parameters
+                    mlflow.log_param("question", question[:100])
+                    mlflow.log_param("expected_topic", expected_topic)
+                    
+                    # Log metrics
+                    mlflow.log_metric("latency_seconds", latency)
+                    mlflow.log_metric("response_length", response_length)
+                    mlflow.log_metric("word_count", word_count)
+                    mlflow.log_metric("has_error", 1 if has_error else 0)
+                    mlflow.log_metric("is_responsive", 1 if is_responsive else 0)
+                    
+                    # Log response snippet as param (artifacts require local storage)
+                    mlflow.log_param("response_snippet", response[:200] if len(response) > 200 else response)
+                
+                # Store result
+                result = {
+                    "question": question,
+                    "response": response[:100] + "..." if len(response) > 100 else response,
+                    "latency": latency,
+                    "length": response_length,
+                    "words": word_count,
+                    "error": has_error,
+                    "responsive": is_responsive,
+                }
+                results.append(result)
+                
+                # Print result
+                status = "❌" if has_error else "✅"
+                print(f"    🤖 {response[:60]}...")
+                print(f"    {status} latency={latency}s | words={word_count} | responsive={is_responsive}")
+            
+            # Log aggregate metrics to parent run
+            avg_latency = total_latency / len(eval_dataset)
+            error_rate = error_count / len(eval_dataset)
+            success_rate = 1 - error_rate
+            
+            mlflow.log_metric("avg_latency_seconds", round(avg_latency, 3))
+            mlflow.log_metric("total_latency_seconds", round(total_latency, 3))
+            mlflow.log_metric("error_count", error_count)
+            mlflow.log_metric("error_rate", round(error_rate, 3))
+            mlflow.log_metric("success_rate", round(success_rate, 3))
+            
+            # Log summary as param
+            mlflow.log_param("completed", "true")
+        
+        # Print summary
+        print("\n" + "=" * 60)
+        print("📊 Evaluation Summary")
+        print("=" * 60)
+        print(f"   Test Cases:     {len(eval_dataset)}")
+        print(f"   Success Rate:   {success_rate * 100:.1f}%")
+        print(f"   Error Count:    {error_count}")
+        print(f"   Avg Latency:    {avg_latency:.3f}s")
+        print(f"   Total Latency:  {total_latency:.3f}s")
+        print("=" * 60)
+        print(f"\n✅ Results logged to MLflow experiment: {EXPERIMENT_NAME}")
+        print(f"   View at: {MLFLOW_TRACKING_URI}")
+    
+    if __name__ == "__main__":
+        print("=" * 60)
+        print("Kagenti Agent Evaluation (ODH MLflow)")
+        print("=" * 60)
+        
+        # Test agent connectivity
+        print("\n🔍 Testing agent connectivity...")
+        test = call_agent("test")
+        if "Error" in test:
+            print(f"⚠️ Agent may not be reachable: {test}")
+        else:
+            print(f"✅ Agent response: {test[:60]}...")
+        
+        setup_mlflow()
+        
+        try:
+            run_evaluation()
+        except Exception as e:
+            import traceback
+            print(f"\n❌ Evaluation failed: {e}")
+            traceback.print_exc()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agent-evaluation
+  namespace: kagenti
+spec:
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: simple-agent-mlflow-demo
+      restartPolicy: Never
+      containers:
+        - name: evaluate
+          image: registry.access.redhat.com/ubi9/python-312:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              pip install --quiet mlflow httpx
+              python /scripts/evaluate.py
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+      volumes:
+        - name: script
+          configMap:
+            name: evaluate-script

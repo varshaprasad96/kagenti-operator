@@ -20,6 +20,7 @@ class MLflowTracker:
         self.tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
         self.experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "simple-mlflow-agent")
         self.insecure_tls = os.getenv("MLFLOW_TRACKING_INSECURE_TLS", "false").lower() == "true"
+        self.workspace = os.getenv("MLFLOW_WORKSPACE", "default")
         self.request_count = 0
         self.success_count = 0
         self.total_latency = 0.0
@@ -33,6 +34,9 @@ class MLflowTracker:
     
     def _get_k8s_token(self):
         """Read Kubernetes service account token."""
+        env_token = os.getenv("MLFLOW_TRACKING_TOKEN")
+        if env_token:
+            return env_token
         token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
         try:
             with open(token_path, "r") as f:
@@ -50,6 +54,7 @@ class MLflowTracker:
         try:
             import mlflow
             self.mlflow = mlflow
+            self._register_workspace_header_provider()
             
             if self.insecure_tls:
                 import urllib3
@@ -59,17 +64,54 @@ class MLflowTracker:
             token = self._get_k8s_token()
             if token:
                 os.environ["MLFLOW_TRACKING_TOKEN"] = token
-                logger.info("Using K8s token for MLflow auth")
+                logger.info(f"Using MLflow tracking token for auth (length={len(token)})")
+            else:
+                logger.warning("No MLflow token available!")
             
-            os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] = "5"
+            os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] = "10"
             
+            logger.info(f"Setting tracking URI: {self.tracking_uri}")
             mlflow.set_tracking_uri(self.tracking_uri)
+            
+            logger.info(f"Setting experiment: {self.experiment_name} (workspace={self.workspace})")
             mlflow.set_experiment(self.experiment_name)
-            logger.info(f"MLflow initialized: {self.tracking_uri}")
+            
+            logger.info(f"MLflow initialized successfully: {self.tracking_uri}")
             self.enabled = True
         except Exception as e:
+            import traceback
             logger.warning(f"MLflow init failed: {e}")
+            logger.warning(f"Traceback: {traceback.format_exc()}")
             self.enabled = False
+
+    def _register_workspace_header_provider(self):
+        """Register a request header provider for the ODH workspace context."""
+        try:
+            from mlflow.tracking.request_header.abstract_request_header_provider import (
+                RequestHeaderProvider,
+            )
+            from mlflow.tracking.request_header import registry as header_registry
+
+            workspace = self.workspace
+
+            class WorkspaceHeaderProvider(RequestHeaderProvider):
+                def in_context(self):
+                    return True
+
+                def request_headers(self):
+                    # ODH MLflow requires a workspace context header.
+                    # Set multiple variants to cover gateway expectations.
+                    return {
+                        "mlflow-workspace": workspace,
+                        "x-mlflow-workspace": workspace,
+                        "x-mlflow-workspace-name": workspace,
+                        "x-workspace-name": workspace,
+                    }
+
+            header_registry._request_header_provider_registry.register(WorkspaceHeaderProvider)
+            logger.info("Registered MLflow workspace header provider")
+        except Exception as e:
+            logger.warning(f"Failed to register workspace header provider: {e}")
     
     def log_request(self, task_name: str, latency: float, success: bool, metadata: dict = None):
         self.request_count += 1
@@ -90,7 +132,7 @@ class MLflowTracker:
     
     def _log_to_mlflow(self, task_name: str, latency: float, success: bool, metadata: dict):
         try:
-            with self.mlflow.start_run(run_name=f"{task_name}_{self.request_count}"):
+            with self.mlflow.start_run(run_name=f"{task_name}_{self.request_count}", log_system_metrics=False):
                 self.mlflow.log_param("task_name", task_name)
                 if metadata:
                     for k, v in metadata.items():

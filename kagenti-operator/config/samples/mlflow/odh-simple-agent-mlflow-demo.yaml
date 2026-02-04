@@ -1,17 +1,17 @@
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: Agent
 metadata:
-  name: simple-agent-mlflow
+  name: simple-agent-mlflow-demo
   namespace: kagenti
   labels:
-    app.kubernetes.io/name: simple-agent-mlflow
+    app.kubernetes.io/name: simple-agent-mlflow-demo
     kagenti.io/agent-protocol: a2a
     kagenti.io/type: agent
     kagenti.io/observability: mlflow
   annotations:
-    description: "Simple agent with MLflow integration (no MCP)"
+    description: "Demo agent with MLflow integration for recording"
 spec:
-  description: "Simple agent with MLflow tracking and vLLM backend"
+  description: "Demo agent with MLflow tracking"
   replicas: 1
 
   imageSource:
@@ -25,7 +25,7 @@ spec:
 
   podTemplateSpec:
     spec:
-      serviceAccountName: simple-agent-mlflow
+      serviceAccountName: simple-agent-mlflow-demo
       containers:
         - name: agent
           image: quay.io/vnarsing/simple-agent:latest
@@ -40,13 +40,11 @@ spec:
             - name: HOST
               value: "0.0.0.0"
 
-            # MLflow configuration - use gateway URL
+            # MLflow configuration
             - name: MLFLOW_TRACKING_URI
-              value: "https://data-science-gateway.apps.rosa.varsha.x2zf.p3.openshiftapps.com/mlflow"
+              value: "https://mlflow.opendatahub.svc.cluster.local:8443"
             - name: MLFLOW_EXPERIMENT_NAME
-              value: "kagenti-simple-agent"
-            - name: MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING
-              value: "true"
+              value: "kagenti-mlflow-demo"
             - name: MLFLOW_TRACKING_INSECURE_TLS
               value: "true"
             - name: MLFLOW_WORKSPACE
