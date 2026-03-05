@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"context"
 	"crypto/rsa"
 	"time"
 
@@ -50,8 +49,6 @@ var _ = Describe("Negative Signature Verification", func() {
 			agentCardName  = "sig-tamper-card"
 			namespace      = "default"
 		)
-
-		ctx := context.Background()
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
@@ -110,8 +107,6 @@ var _ = Describe("Negative Signature Verification", func() {
 			agentCardName  = "sig-tamper-audit-card"
 			namespace      = "default"
 		)
-
-		ctx := context.Background()
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)

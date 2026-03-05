@@ -80,6 +80,8 @@ func getResignTrigger(ctx context.Context, name, ns string) string {
 	return d.Spec.Template.Annotations[AnnotationResignTrigger]
 }
 
+// reconcileTwice runs two reconcile cycles: the first adds the finalizer,
+// the second performs the actual card fetch, verification, and status update.
 func reconcileTwice(reconciler *AgentCardReconciler, name, ns string) {
 	nn := types.NamespacedName{Name: name, Namespace: ns}
 	_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
@@ -100,8 +102,6 @@ var _ = Describe("Proactive Restart for Re-signing", func() {
 			agentCardName  = "restart-bundle-card"
 			namespace      = "default"
 		)
-
-		ctx := context.Background()
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
@@ -133,10 +133,10 @@ var _ = Describe("Proactive Restart for Re-signing", func() {
 			Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
 
 			reconciler := &AgentCardReconciler{
-				Client:            k8sClient,
-				Scheme:            k8sClient.Scheme(),
-				AgentFetcher:      &mockFetcherFunc{fn: makeCardData},
-				RequireSignature:  true,
+				Client:           k8sClient,
+				Scheme:           k8sClient.Scheme(),
+				AgentFetcher:     &mockFetcherFunc{fn: makeCardData},
+				RequireSignature: true,
 				SignatureProvider: &mockSignatureProviderWithBundleHash{
 					pubKeyPEM: pubPEM, bundleHash: "new-bundle-hash", leafExpiry: time.Now().Add(24 * time.Hour),
 				},
@@ -158,8 +158,6 @@ var _ = Describe("Proactive Restart for Re-signing", func() {
 			agentCardName  = "restart-svid-card"
 			namespace      = "default"
 		)
-
-		ctx := context.Background()
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
@@ -191,12 +189,12 @@ var _ = Describe("Proactive Restart for Re-signing", func() {
 			Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
 
 			reconciler := &AgentCardReconciler{
-				Client:            k8sClient,
-				Scheme:            k8sClient.Scheme(),
-				AgentFetcher:      &mockFetcherFunc{fn: makeCardData},
-				RequireSignature:  true,
+				Client:           k8sClient,
+				Scheme:           k8sClient.Scheme(),
+				AgentFetcher:     &mockFetcherFunc{fn: makeCardData},
+				RequireSignature: true,
 				SignatureProvider: &mockSignatureProviderWithBundleHash{
-					pubKeyPEM: pubPEM, bundleHash: "same-hash", leafExpiry: time.Now().Add(5 * time.Minute),
+					pubKeyPEM: pubPEM, bundleHash: "same-hash", leafExpiry: time.Now().Add(DefaultSVIDExpiryGracePeriod / 6),
 				},
 			}
 
@@ -212,8 +210,6 @@ var _ = Describe("Proactive Restart for Re-signing", func() {
 			agentCardName  = "restart-noop-card"
 			namespace      = "default"
 		)
-
-		ctx := context.Background()
 
 		AfterEach(func() {
 			cleanupResource(ctx, &agentv1alpha1.AgentCard{}, agentCardName, namespace)
@@ -245,10 +241,10 @@ var _ = Describe("Proactive Restart for Re-signing", func() {
 			Expect(k8sClient.Create(ctx, agentCard)).To(Succeed())
 
 			reconciler := &AgentCardReconciler{
-				Client:            k8sClient,
-				Scheme:            k8sClient.Scheme(),
-				AgentFetcher:      &mockFetcherFunc{fn: makeCardData},
-				RequireSignature:  true,
+				Client:           k8sClient,
+				Scheme:           k8sClient.Scheme(),
+				AgentFetcher:     &mockFetcherFunc{fn: makeCardData},
+				RequireSignature: true,
 				SignatureProvider: &mockSignatureProviderWithBundleHash{
 					pubKeyPEM: pubPEM, bundleHash: "stable-hash", leafExpiry: time.Now().Add(2 * time.Hour),
 				},

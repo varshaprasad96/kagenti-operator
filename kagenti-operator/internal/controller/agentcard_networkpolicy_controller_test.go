@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	netv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -294,11 +295,13 @@ var _ = Describe("AgentCardNetworkPolicyReconciler", func() {
 			reconcileNP(r, agentCardName, namespace)
 
 			Eventually(func() bool {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName + "-signature-policy", Namespace: namespace}, &netv1.NetworkPolicy{}) != nil
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName + "-signature-policy", Namespace: namespace}, &netv1.NetworkPolicy{})
+				return apierrors.IsNotFound(err)
 			}, timeout, interval).Should(BeTrue())
 
 			Eventually(func() bool {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: agentCardName, Namespace: namespace}, &agentv1alpha1.AgentCard{}) != nil
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: agentCardName, Namespace: namespace}, &agentv1alpha1.AgentCard{})
+				return apierrors.IsNotFound(err)
 			}, timeout, interval).Should(BeTrue())
 		})
 	})
