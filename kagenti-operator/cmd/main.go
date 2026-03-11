@@ -41,6 +41,7 @@ import (
 	"github.com/kagenti/operator/internal/agentcard"
 	"github.com/kagenti/operator/internal/controller"
 	"github.com/kagenti/operator/internal/signature"
+	"github.com/kagenti/operator/internal/tekton"
 	webhookv1alpha1 "github.com/kagenti/operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -53,6 +54,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(agentv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(tekton.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -275,6 +277,16 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentCardSync")
 		os.Exit(1)
 	}
+
+	if controller.TektonConfigCRDExists(mgr.GetConfig()) {
+		if err = (&controller.TektonConfigReconciler{
+			Client: mgr.GetClient(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "TektonConfig")
+			os.Exit(1)
+		}
+	}
+
 	if err = webhookv1alpha1.SetupAgentCardWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "AgentCard")
 		os.Exit(1)
