@@ -72,3 +72,12 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - operator.tekton.dev
+  resources:
+  - tektonconfigs
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
