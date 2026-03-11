@@ -19,13 +19,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -44,8 +44,8 @@ import (
 const (
 	AgentRuntimeFinalizer = "kagenti.io/cleanup"
 
-	// LabelConfigHash is the annotation applied to PodTemplateSpec to trigger rolling updates.
-	LabelConfigHash = "kagenti.io/config-hash"
+	// AnnotationConfigHash is the annotation applied to PodTemplateSpec to trigger rolling updates.
+	AnnotationConfigHash = "kagenti.io/config-hash"
 
 	// Condition types for AgentRuntime status.
 	ConditionTypeReady          = "Ready"
@@ -92,11 +92,10 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	// 4. Resolve targetRef
-	workloadObj, err := r.resolveTargetRef(ctx, rt)
-	if err != nil {
+	// 4. Resolve targetRef (existence check)
+	if err := r.resolveTargetRef(ctx, rt); err != nil {
 		logger.Error(err, "Failed to resolve targetRef")
-		r.setPhase(ctx, rt, agentv1alpha1.RuntimePhaseError)
+		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
 		r.setCondition(rt, ConditionTypeTargetResolved, metav1.ConditionFalse, "TargetNotFound", err.Error())
 		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status")
@@ -104,7 +103,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if r.Recorder != nil {
 			r.Recorder.Event(rt, corev1.EventTypeWarning, "TargetNotFound", err.Error())
 		}
-		return ctrl.Result{RequeueAfter: 30 * 1e9}, nil // 30s
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	r.setCondition(rt, ConditionTypeTargetResolved, metav1.ConditionTrue, "TargetFound",
@@ -114,23 +113,23 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	configHash, err := ComputeConfigHash(ctx, r.Client, &rt.Spec)
 	if err != nil {
 		logger.Error(err, "Failed to compute config hash")
-		r.setPhase(ctx, rt, agentv1alpha1.RuntimePhaseError)
+		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
 		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "ConfigHashError", err.Error())
 		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status")
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// 6. Apply labels and annotations to the target workload
-	if err := r.applyWorkloadConfig(ctx, rt, workloadObj, configHash); err != nil {
+	if err := r.applyWorkloadConfig(ctx, rt, configHash); err != nil {
 		logger.Error(err, "Failed to apply workload config")
-		r.setPhase(ctx, rt, agentv1alpha1.RuntimePhaseError)
+		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
 		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "ConfigApplyError", err.Error())
 		if statusErr := r.Status().Update(ctx, rt); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status")
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// 7. Count configured pods
@@ -141,7 +140,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// 8. Update status
 	rt.Status.ConfiguredPods = configuredPods
-	r.setPhase(ctx, rt, agentv1alpha1.RuntimePhaseActive)
+	r.setPhase(rt, agentv1alpha1.RuntimePhaseActive)
 	r.setCondition(rt, ConditionTypeReady, metav1.ConditionTrue, "Configured",
 		fmt.Sprintf("Workload %s configured with config-hash %s", rt.Spec.TargetRef.Name, configHash[:12]))
 	if err := r.Status().Update(ctx, rt); err != nil {
@@ -157,32 +156,36 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-// resolveTargetRef looks up the workload referenced by spec.targetRef.
-func (r *AgentRuntimeReconciler) resolveTargetRef(ctx context.Context, rt *agentv1alpha1.AgentRuntime) (*unstructured.Unstructured, error) {
+// resolveTargetRef verifies that the workload referenced by spec.targetRef exists.
+func (r *AgentRuntimeReconciler) resolveTargetRef(ctx context.Context, rt *agentv1alpha1.AgentRuntime) error {
 	ref := rt.Spec.TargetRef
 
 	gv, err := schema.ParseGroupVersion(ref.APIVersion)
 	if err != nil {
-		return nil, fmt.Errorf("invalid apiVersion %s: %w", ref.APIVersion, err)
+		return fmt.Errorf("invalid apiVersion %s: %w", ref.APIVersion, err)
 	}
 
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(gv.WithKind(ref.Kind))
+	acc, ok := newRuntimePodTemplateAccessor(ref.Kind)
+	if !ok {
+		return fmt.Errorf("unsupported workload kind: %s", ref.Kind)
+	}
 
 	key := client.ObjectKey{Namespace: rt.Namespace, Name: ref.Name}
-	if err := r.Get(ctx, key, obj); err != nil {
+	// Use the typed object to avoid double-fetch in applyWorkloadConfig
+	_ = gv // validated above
+	if err := r.Get(ctx, key, acc.obj); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("%s/%s %s not found in namespace %s", ref.APIVersion, ref.Kind, ref.Name, rt.Namespace)
+			return fmt.Errorf("%s/%s %s not found in namespace %s", ref.APIVersion, ref.Kind, ref.Name, rt.Namespace)
 		}
-		return nil, err
+		return err
 	}
 
-	return obj, nil
+	return nil
 }
 
 // applyWorkloadConfig applies kagenti labels and config-hash annotation to the
 // target workload's metadata and PodTemplateSpec.
-func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *agentv1alpha1.AgentRuntime, _ *unstructured.Unstructured, configHash string) error {
+func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *agentv1alpha1.AgentRuntime, configHash string) error {
 	logger := log.FromContext(ctx)
 	ref := rt.Spec.TargetRef
 
@@ -196,6 +199,20 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := r.Get(ctx, key, acc.obj); err != nil {
 			return err
+		}
+
+		// Check if update is needed before mutating
+		currentWorkloadLabels := acc.obj.GetLabels()
+		currentPodLabels := acc.getPodLabels(acc.obj)
+		currentPodAnnotations := acc.getPodAnnotations(acc.obj)
+
+		alreadyConfigured := currentWorkloadLabels[LabelAgentType] == string(rt.Spec.Type) &&
+			currentWorkloadLabels[LabelManagedBy] == LabelManagedByValue &&
+			currentPodLabels[LabelAgentType] == string(rt.Spec.Type) &&
+			currentPodAnnotations[AnnotationConfigHash] == configHash
+
+		if alreadyConfigured {
+			return nil
 		}
 
 		// Apply labels to workload metadata
@@ -220,15 +237,7 @@ func (r *AgentRuntimeReconciler) applyWorkloadConfig(ctx context.Context, rt *ag
 		if podAnnotations == nil {
 			podAnnotations = make(map[string]string)
 		}
-
-		currentHash := podAnnotations[LabelConfigHash]
-		if currentHash == configHash &&
-			workloadLabels[LabelAgentType] == string(rt.Spec.Type) {
-			// No changes needed
-			return nil
-		}
-
-		podAnnotations[LabelConfigHash] = configHash
+		podAnnotations[AnnotationConfigHash] = configHash
 		acc.setPodAnnotations(acc.obj, podAnnotations)
 
 		logger.Info("Applying config to workload",
@@ -264,6 +273,8 @@ func (r *AgentRuntimeReconciler) countConfiguredPods(ctx context.Context, rt *ag
 
 // isPodOwnedByWorkload checks if a pod is transitively owned by the named workload.
 // For Deployments, the chain is: Deployment -> ReplicaSet -> Pod.
+// Note: uses prefix matching on ReplicaSet names which may produce false positives
+// if workload names are prefixes of other workload names (e.g., "app" vs "app-v2").
 func isPodOwnedByWorkload(pod *corev1.Pod, workloadName string) bool {
 	for _, ref := range pod.OwnerReferences {
 		// ReplicaSet names are prefixed with the Deployment name
@@ -303,7 +314,10 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 		key := types.NamespacedName{Name: ref.Name, Namespace: rt.Namespace}
 		updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			if err := r.Get(ctx, key, acc.obj); err != nil {
-				return client.IgnoreNotFound(err)
+				if apierrors.IsNotFound(err) {
+					return nil
+				}
+				return err
 			}
 
 			// Preserve kagenti.io/type label (per issue spec)
@@ -312,7 +326,7 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 			if podAnnotations == nil {
 				podAnnotations = make(map[string]string)
 			}
-			podAnnotations[LabelConfigHash] = defaultsHash
+			podAnnotations[AnnotationConfigHash] = defaultsHash
 			acc.setPodAnnotations(acc.obj, podAnnotations)
 
 			// Remove managed-by from workload metadata
@@ -347,7 +361,7 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 }
 
 // setPhase sets the status phase on the AgentRuntime (does not persist — caller must update).
-func (r *AgentRuntimeReconciler) setPhase(_ context.Context, rt *agentv1alpha1.AgentRuntime, phase agentv1alpha1.RuntimePhase) {
+func (r *AgentRuntimeReconciler) setPhase(rt *agentv1alpha1.AgentRuntime, phase agentv1alpha1.RuntimePhase) {
 	rt.Status.Phase = phase
 }
 
@@ -400,7 +414,7 @@ func (r *AgentRuntimeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&appsv1.StatefulSet{},
 			handler.EnqueueRequestsFromMapFunc(r.mapWorkloadToAgentRuntime("apps/v1", "StatefulSet")),
 		).
-		Named("AgentRuntime").
+		Named("agentruntime").
 		Complete(r)
 }
 

@@ -160,8 +160,8 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(dep.Spec.Template.Labels[LabelAgentType]).To(Equal("agent"))
 
 			By("verifying PodTemplateSpec config-hash annotation")
-			Expect(dep.Spec.Template.Annotations).To(HaveKey(LabelConfigHash))
-			Expect(dep.Spec.Template.Annotations[LabelConfigHash]).NotTo(BeEmpty())
+			Expect(dep.Spec.Template.Annotations).To(HaveKey(AnnotationConfigHash))
+			Expect(dep.Spec.Template.Annotations[AnnotationConfigHash]).NotTo(BeEmpty())
 		})
 
 		It("should set status to Active after successful reconcile", func() {
@@ -182,7 +182,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 
 			dep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, dep)).To(Succeed())
-			originalHash := dep.Spec.Template.Annotations[LabelConfigHash]
+			originalHash := dep.Spec.Template.Annotations[AnnotationConfigHash]
 
 			By("updating AgentRuntime spec with trace config")
 			rt := &agentv1alpha1.AgentRuntime{}
@@ -199,7 +199,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 
 			By("verifying config-hash changed")
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, dep)).To(Succeed())
-			Expect(dep.Spec.Template.Annotations[LabelConfigHash]).NotTo(Equal(originalHash))
+			Expect(dep.Spec.Template.Annotations[AnnotationConfigHash]).NotTo(Equal(originalHash))
 		})
 	})
 
@@ -266,7 +266,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 			dep := &appsv1.Deployment{}
 			depNN := types.NamespacedName{Name: deploymentName, Namespace: namespace}
 			Expect(k8sClient.Get(ctx, depNN, dep)).To(Succeed())
-			originalHash := dep.Spec.Template.Annotations[LabelConfigHash]
+			originalHash := dep.Spec.Template.Annotations[AnnotationConfigHash]
 			Expect(originalHash).NotTo(BeEmpty())
 
 			By("deleting the AgentRuntime")
@@ -283,7 +283,7 @@ var _ = Describe("AgentRuntime Controller", func() {
 			Expect(dep.Spec.Template.Labels[LabelAgentType]).To(Equal("agent"))
 
 			By("verifying config-hash changed to defaults-only")
-			newHash := dep.Spec.Template.Annotations[LabelConfigHash]
+			newHash := dep.Spec.Template.Annotations[AnnotationConfigHash]
 			Expect(newHash).NotTo(Equal(originalHash))
 
 			By("verifying managed-by label is removed")

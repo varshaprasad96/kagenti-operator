@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -40,7 +39,6 @@ const (
 )
 
 // configData is the canonical representation used for hash computation.
-// Fields are exported for JSON serialization.
 type configData struct {
 	Type        string            `json:"type"`
 	TrustDomain string            `json:"trustDomain,omitempty"`
@@ -95,7 +93,7 @@ func readDefaults(ctx context.Context, c client.Reader) (map[string]string, erro
 // a canonical configData struct. If spec is nil, only defaults are included.
 func buildConfigData(spec *agentv1alpha1.AgentRuntimeSpec, defaults map[string]string) configData {
 	data := configData{
-		Defaults: sortedDefaults(defaults),
+		Defaults: defaults,
 	}
 
 	if spec == nil {
@@ -121,85 +119,13 @@ func buildConfigData(spec *agentv1alpha1.AgentRuntimeSpec, defaults map[string]s
 	return data
 }
 
-// sortedDefaults returns a new map with the same entries. The map itself is
-// unordered, but JSON serialization in hashConfigData uses sorted keys.
-func sortedDefaults(m map[string]string) map[string]string {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
 // hashConfigData produces a deterministic SHA256 hex string from configData.
-// Keys are sorted to ensure stable output.
+// Go's encoding/json sorts map keys by default, ensuring deterministic output.
 func hashConfigData(data configData) (string, error) {
-	// Use sorted keys for deterministic JSON output
-	b, err := marshalSorted(data)
+	b, err := json.Marshal(data)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal config data: %w", err)
 	}
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:]), nil
-}
-
-// marshalSorted produces JSON with sorted map keys for deterministic hashing.
-func marshalSorted(v interface{}) ([]byte, error) {
-	// encoding/json sorts map keys by default in Go, but we explicitly
-	// re-marshal through an intermediate map to guarantee ordering for
-	// any nested structures.
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-
-	// Unmarshal into ordered structure and re-marshal
-	var m map[string]interface{}
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, err
-	}
-
-	return marshalOrderedMap(m)
-}
-
-// marshalOrderedMap recursively marshals a map with sorted keys.
-func marshalOrderedMap(m map[string]interface{}) ([]byte, error) {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	buf := []byte("{")
-	for i, k := range keys {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		keyJSON, err := json.Marshal(k)
-		if err != nil {
-			return nil, err
-		}
-		buf = append(buf, keyJSON...)
-		buf = append(buf, ':')
-
-		switch val := m[k].(type) {
-		case map[string]interface{}:
-			valJSON, err := marshalOrderedMap(val)
-			if err != nil {
-				return nil, err
-			}
-			buf = append(buf, valJSON...)
-		default:
-			valJSON, err := json.Marshal(val)
-			if err != nil {
-				return nil, err
-			}
-			buf = append(buf, valJSON...)
-		}
-	}
-	buf = append(buf, '}')
-	return buf, nil
 }
