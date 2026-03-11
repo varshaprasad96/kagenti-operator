@@ -278,6 +278,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controller.AgentRuntimeReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("agentruntime-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AgentRuntime")
+		os.Exit(1)
+	}
+
 	if controller.TektonConfigCRDExists(mgr.GetConfig()) {
 		if err = (&controller.TektonConfigReconciler{
 			Client: mgr.GetClient(),

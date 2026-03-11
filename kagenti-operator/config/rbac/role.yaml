@@ -27,6 +27,7 @@ rules:
   - agent.kagenti.dev
   resources:
   - agentcards
+  - agentruntimes
   verbs:
   - create
   - delete
@@ -39,12 +40,14 @@ rules:
   - agent.kagenti.dev
   resources:
   - agentcards/finalizers
+  - agentruntimes/finalizers
   verbs:
   - update
 - apiGroups:
   - agent.kagenti.dev
   resources:
   - agentcards/status
+  - agentruntimes/status
   verbs:
   - get
   - patch
@@ -79,5 +82,5 @@ rules:
   verbs:
   - get
   - list
-  - watch
   - patch
+  - watch
