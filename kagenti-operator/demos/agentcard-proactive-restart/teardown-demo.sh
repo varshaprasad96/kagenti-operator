@@ -18,7 +18,7 @@ CURRENT_ARGS=$(kubectl get deployment "$OPERATOR_DEPLOY" -n "$OPERATOR_NS" \
 RESTORED_ARGS=$(echo "$CURRENT_ARGS" | python3 -c "
 import sys, json, re
 args = json.loads(sys.stdin.read())
-patched = [re.sub(r'^--svid-expiry-grace-period=.*', '--svid-expiry-grace-period=30m', a) for a in args]
+patched = [re.sub(r'^--svid-expiry-grace-period=\S+', '--svid-expiry-grace-period=30m', a) for a in args]
 print(json.dumps(patched))
 ")
 
