@@ -49,9 +49,9 @@ const (
 	AnnotationConfigHash = "kagenti.io/config-hash"
 
 	// Condition types for AgentRuntime status.
-	ConditionTypeReady           = "Ready"
-	ConditionTypeTargetResolved  = "TargetResolved"
-	ConditionTypeConfigResolved  = "ConfigResolved"
+	ConditionTypeReady          = "Ready"
+	ConditionTypeTargetResolved = "TargetResolved"
+	ConditionTypeConfigResolved = "ConfigResolved"
 )
 
 // AgentRuntimeReconciler reconciles AgentRuntime objects.

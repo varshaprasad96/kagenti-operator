@@ -415,13 +415,13 @@ var _ = Describe("AgentRuntime Controller", func() {
 			overrideHash := overrideDep.Spec.Template.Annotations[AnnotationConfigHash]
 
 			// Compute hash for a minimal spec (no overrides)
-			minimalHash, err := ComputeConfigHash(ctx, k8sClient, namespace, &agentv1alpha1.AgentRuntimeSpec{
+			minimalResult, err := ComputeConfigHash(ctx, k8sClient, namespace, &agentv1alpha1.AgentRuntimeSpec{
 				Type:      agentv1alpha1.RuntimeTypeAgent,
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "x"},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(overrideHash).NotTo(Equal(minimalHash), "CR with overrides should have a different hash")
+			Expect(overrideHash).NotTo(Equal(minimalResult.Hash), "CR with overrides should have a different hash")
 		})
 	})
 
