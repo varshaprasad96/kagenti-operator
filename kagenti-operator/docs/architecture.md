@@ -201,10 +201,15 @@ The AgentRuntime Controller reconciles AgentRuntime CRs by resolving the target 
 3. Ensure kagenti.io/cleanup finalizer is present
 4. Resolve targetRef (verify Deployment/StatefulSet exists)
 5. Compute config hash from merged configuration:
-   a. Read cluster defaults (kagenti-webhook-defaults, kagenti-webhook-feature-gates)
-   b. Read namespace defaults (ConfigMap with kagenti.io/defaults=true)
-   c. Merge: cluster → namespace → CR spec (CR wins)
-   d. Hash the merged result (deterministic SHA256)
+   a. Read cluster defaults (kagenti-webhook-defaults)
+   b. Read cluster feature gates (kagenti-webhook-feature-gates)
+      Note: feature gates are platform-wide policy — they are NOT
+      overrideable by namespace defaults or AgentRuntime CRs.
+   c. Read namespace defaults (ConfigMap with kagenti.io/defaults=true)
+   d. Merge defaults: cluster → namespace → CR spec (CR wins)
+   e. Hash the merged result (deterministic SHA256)
+   f. Surface warnings (e.g., multiple namespace defaults ConfigMaps)
+      as a ConfigResolved condition on the AgentRuntime status
 6. Apply to target workload:
    a. kagenti.io/type label on workload metadata + PodTemplateSpec
    b. app.kubernetes.io/managed-by: kagenti-operator on workload metadata
@@ -247,6 +252,7 @@ AgentRuntime CR created/updated
 | Condition | Meaning |
 |-----------|---------|
 | `TargetResolved` | Target workload (Deployment/StatefulSet) exists |
+| `ConfigResolved` | Configuration merged successfully. Reason is `ConfigResolved` when clean, `ConfigWarning` when ambiguity detected (e.g., multiple namespace defaults ConfigMaps). Warnings are surfaced in the condition message and as Kubernetes events. |
 | `Ready` | Labels and config-hash applied successfully |
 
 ### NetworkPolicy Controller

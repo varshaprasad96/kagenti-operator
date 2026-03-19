@@ -66,19 +66,29 @@ type traceConfig struct {
 	Rate     float64 `json:"rate,omitempty"`
 }
 
+// ConfigResult holds the computed hash and any warnings from the config resolution.
+type ConfigResult struct {
+	Hash     string
+	Warnings []string
+}
+
 // ComputeConfigHash computes a deterministic SHA256 hash from the 3-layer
 // merged configuration: cluster defaults → namespace defaults → AgentRuntime CR.
 // Both the controller and webhook perform the same merge independently.
-func ComputeConfigHash(ctx context.Context, c client.Reader, namespace string, spec *agentv1alpha1.AgentRuntimeSpec) (string, error) {
-	resolved := resolveConfig(ctx, c, namespace, spec)
-	return hashResolvedConfig(resolved)
+func ComputeConfigHash(ctx context.Context, c client.Reader, namespace string, spec *agentv1alpha1.AgentRuntimeSpec) (ConfigResult, error) {
+	resolved, warnings := resolveConfig(ctx, c, namespace, spec)
+	hash, err := hashResolvedConfig(resolved)
+	if err != nil {
+		return ConfigResult{}, err
+	}
+	return ConfigResult{Hash: hash, Warnings: warnings}, nil
 }
 
 // ComputeDefaultsOnlyHash computes a hash using only cluster + namespace defaults
 // (no CR overrides). Used when an AgentRuntime is deleted to trigger a rolling
 // update back to platform defaults.
 func ComputeDefaultsOnlyHash(ctx context.Context, c client.Reader, namespace string) (string, error) {
-	resolved := resolveConfig(ctx, c, namespace, nil)
+	resolved, _ := resolveConfig(ctx, c, namespace, nil)
 	return hashResolvedConfig(resolved)
 }
 
@@ -86,15 +96,19 @@ func ComputeDefaultsOnlyHash(ctx context.Context, c client.Reader, namespace str
 // 1. Cluster defaults (ConfigMaps in kagenti-webhook-system)
 // 2. Namespace defaults (ConfigMap with kagenti.io/defaults=true label)
 // 3. AgentRuntime CR spec (highest priority)
-func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec *agentv1alpha1.AgentRuntimeSpec) resolvedConfig {
+func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec *agentv1alpha1.AgentRuntimeSpec) (resolvedConfig, []string) {
 	logger := log.FromContext(ctx)
+	var warnings []string
 
 	// Layer 1: cluster defaults
 	clusterDefaults := readConfigMapData(ctx, c, ClusterDefaultsNamespace, ClusterDefaultsConfigMapName)
 	featureGates := readConfigMapData(ctx, c, ClusterDefaultsNamespace, ClusterFeatureGatesConfigMapName)
 
 	// Layer 2: namespace defaults (override cluster)
-	nsDefaults := readNamespaceDefaults(ctx, c, namespace)
+	nsDefaults, nsWarning := readNamespaceDefaults(ctx, c, namespace)
+	if nsWarning != "" {
+		warnings = append(warnings, nsWarning)
+	}
 	merged := mergeMaps(clusterDefaults, nsDefaults)
 
 	resolved := resolvedConfig{
@@ -104,7 +118,7 @@ func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec 
 
 	if spec == nil {
 		logger.V(2).Info("Resolved config with defaults only", "namespace", namespace)
-		return resolved
+		return resolved, warnings
 	}
 
 	// Layer 3: CR overrides (highest priority).
@@ -129,7 +143,7 @@ func resolveConfig(ctx context.Context, c client.Reader, namespace string, spec 
 		}
 	}
 
-	return resolved
+	return resolved, warnings
 }
 
 // readConfigMapData reads a specific ConfigMap by name and namespace.
@@ -148,8 +162,9 @@ func readConfigMapData(ctx context.Context, c client.Reader, namespace, name str
 }
 
 // readNamespaceDefaults reads the namespace-level defaults ConfigMap.
-// Expects exactly one ConfigMap with the kagenti.io/defaults=true label per namespace.
-func readNamespaceDefaults(ctx context.Context, c client.Reader, namespace string) map[string]string {
+// Expects at most one ConfigMap with the kagenti.io/defaults=true label per namespace.
+// Returns the ConfigMap data and a warning if multiple ConfigMaps are found.
+func readNamespaceDefaults(ctx context.Context, c client.Reader, namespace string) (map[string]string, string) {
 	logger := log.FromContext(ctx)
 
 	cmList := &corev1.ConfigMapList{}
@@ -158,28 +173,30 @@ func readNamespaceDefaults(ctx context.Context, c client.Reader, namespace strin
 		client.MatchingLabels{LabelNamespaceDefaults: "true"},
 	); err != nil {
 		logger.V(2).Info("Failed to list namespace defaults ConfigMaps", "namespace", namespace, "error", err)
-		return map[string]string{}
+		return map[string]string{}, ""
 	}
 
 	if len(cmList.Items) == 0 {
-		return map[string]string{}
+		return map[string]string{}, ""
 	}
 
+	var warning string
 	if len(cmList.Items) > 1 {
 		names := make([]string, len(cmList.Items))
 		for i := range cmList.Items {
 			names[i] = cmList.Items[i].Name
 		}
-		logger.Error(
-			fmt.Errorf("expected at most one namespace defaults ConfigMap in %s, found %d: %v", namespace, len(cmList.Items), names),
-			"Multiple namespace defaults ConfigMaps found, using first one",
+		warning = fmt.Sprintf(
+			"multiple namespace defaults ConfigMaps found in %s (expected at most one): %v; using %s",
+			namespace, names, cmList.Items[0].Name,
 		)
+		logger.Error(fmt.Errorf("%s", warning), "Ambiguous namespace defaults")
 	}
 
 	if cmList.Items[0].Data == nil {
-		return map[string]string{}
+		return map[string]string{}, warning
 	}
-	return cmList.Items[0].Data
+	return cmList.Items[0].Data, warning
 }
 
 // mergeMaps merges two maps. Values in override take precedence over base.

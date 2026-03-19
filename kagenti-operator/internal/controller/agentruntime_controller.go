@@ -49,8 +49,9 @@ const (
 	AnnotationConfigHash = "kagenti.io/config-hash"
 
 	// Condition types for AgentRuntime status.
-	ConditionTypeReady          = "Ready"
-	ConditionTypeTargetResolved = "TargetResolved"
+	ConditionTypeReady           = "Ready"
+	ConditionTypeTargetResolved  = "TargetResolved"
+	ConditionTypeConfigResolved  = "ConfigResolved"
 )
 
 // AgentRuntimeReconciler reconciles AgentRuntime objects.
@@ -112,7 +113,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		fmt.Sprintf("%s %s resolved", rt.Spec.TargetRef.Kind, rt.Spec.TargetRef.Name))
 
 	// 5. Compute config hash from merged configuration (cluster → namespace → CR)
-	configHash, err := ComputeConfigHash(ctx, r.Client, rt.Namespace, &rt.Spec)
+	configResult, err := ComputeConfigHash(ctx, r.Client, rt.Namespace, &rt.Spec)
 	if err != nil {
 		logger.Error(err, "Failed to compute config hash")
 		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
@@ -123,8 +124,22 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// Surface config resolution warnings (e.g., multiple namespace defaults ConfigMaps)
+	if len(configResult.Warnings) > 0 {
+		r.setCondition(rt, ConditionTypeConfigResolved, metav1.ConditionTrue, "ConfigWarning",
+			strings.Join(configResult.Warnings, "; "))
+		if r.Recorder != nil {
+			for _, w := range configResult.Warnings {
+				r.Recorder.Event(rt, corev1.EventTypeWarning, "ConfigWarning", w)
+			}
+		}
+	} else {
+		r.setCondition(rt, ConditionTypeConfigResolved, metav1.ConditionTrue, "ConfigResolved",
+			"Configuration resolved successfully")
+	}
+
 	// 6. Apply labels and annotations to the target workload
-	if err := r.applyWorkloadConfig(ctx, rt, configHash); err != nil {
+	if err := r.applyWorkloadConfig(ctx, rt, configResult.Hash); err != nil {
 		logger.Error(err, "Failed to apply workload config")
 		r.setPhase(rt, agentv1alpha1.RuntimePhaseError)
 		r.setCondition(rt, ConditionTypeReady, metav1.ConditionFalse, "ConfigApplyError", err.Error())
@@ -144,7 +159,7 @@ func (r *AgentRuntimeReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	rt.Status.ConfiguredPods = configuredPods
 	r.setPhase(rt, agentv1alpha1.RuntimePhaseActive)
 	r.setCondition(rt, ConditionTypeReady, metav1.ConditionTrue, "Configured",
-		fmt.Sprintf("Workload %s configured with config-hash %s", rt.Spec.TargetRef.Name, configHash[:12]))
+		fmt.Sprintf("Workload %s configured with config-hash %s", rt.Spec.TargetRef.Name, configResult.Hash[:12]))
 	if err := r.Status().Update(ctx, rt); err != nil {
 		logger.Error(err, "Failed to update status")
 		return ctrl.Result{}, err
@@ -336,7 +351,11 @@ func (r *AgentRuntimeReconciler) handleDeletion(ctx context.Context, rt *agentv1
 			return r.Update(ctx, acc.obj)
 		})
 		if updateErr != nil {
-			logger.Error(updateErr, "Failed to update workload on deletion")
+			// Return the error to requeue — don't remove the finalizer until the
+			// workload is cleaned up. This prevents the CR from being deleted while
+			// the workload retains stale managed-by labels and wrong config-hash.
+			logger.Error(updateErr, "Failed to update workload on deletion, will retry")
+			return ctrl.Result{}, updateErr
 		}
 	}
 

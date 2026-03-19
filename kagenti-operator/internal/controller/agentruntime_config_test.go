@@ -21,10 +21,12 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
@@ -81,6 +83,20 @@ func createNamespaceDefaults(ctx context.Context, name, namespace string, data m
 	return cm
 }
 
+func newTestDeployment(name, ns string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "agent", Image: "test:latest"}}},
+			},
+		},
+	}
+}
+
 var _ = Describe("AgentRuntime Config", func() {
 	const namespace = "default"
 	ctx := context.Background()
@@ -92,13 +108,13 @@ var _ = Describe("AgentRuntime Config", func() {
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-det"},
 			}
 
-			hash1, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			result1, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
 			Expect(err).NotTo(HaveOccurred())
 
-			hash2, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			result2, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(hash1).To(Equal(hash2))
+			Expect(result1.Hash).To(Equal(result2.Hash))
 		})
 
 		It("should change when spec type changes", func() {
@@ -111,10 +127,10 @@ var _ = Describe("AgentRuntime Config", func() {
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-type"},
 			}
 
-			hash1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
-			hash2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
 
-			Expect(hash1).NotTo(Equal(hash2))
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
 		It("should change when trace config changes", func() {
@@ -129,10 +145,10 @@ var _ = Describe("AgentRuntime Config", func() {
 				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "otel:4318", Protocol: agentv1alpha1.TraceProtocolHTTP},
 			}
 
-			hash1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
-			hash2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
 
-			Expect(hash1).NotTo(Equal(hash2))
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
 		It("should change when identity changes", func() {
@@ -147,10 +163,10 @@ var _ = Describe("AgentRuntime Config", func() {
 				Identity:  &agentv1alpha1.IdentitySpec{SPIFFE: &agentv1alpha1.SPIFFEIdentity{TrustDomain: "other.org"}},
 			}
 
-			hash1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
-			hash2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec1)
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec2)
 
-			Expect(hash1).NotTo(Equal(hash2))
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
 		It("should produce a non-empty hash even with missing ConfigMaps", func() {
@@ -159,9 +175,9 @@ var _ = Describe("AgentRuntime Config", func() {
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-missing"},
 			}
 
-			hash, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			result, err := ComputeConfigHash(ctx, k8sClient, namespace, spec)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(hash).NotTo(BeEmpty())
+			Expect(result.Hash).NotTo(BeEmpty())
 		})
 
 		It("should change when cluster defaults change", func() {
@@ -173,14 +189,14 @@ var _ = Describe("AgentRuntime Config", func() {
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-cluster"},
 			}
 
-			hash1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
 
 			// Update ConfigMap
 			cm.Data["otel-endpoint"] = "collector-v2:4317"
 			Expect(k8sClient.Update(ctx, cm)).To(Succeed())
 
-			hash2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
-			Expect(hash1).NotTo(Equal(hash2))
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
 		It("should change when feature gates change", func() {
@@ -192,13 +208,13 @@ var _ = Describe("AgentRuntime Config", func() {
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-fg"},
 			}
 
-			hash1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
 
 			fg.Data["globalEnabled"] = "false"
 			Expect(k8sClient.Update(ctx, fg)).To(Succeed())
 
-			hash2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
-			Expect(hash1).NotTo(Equal(hash2))
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 
 		It("should change when namespace defaults change", func() {
@@ -210,13 +226,13 @@ var _ = Describe("AgentRuntime Config", func() {
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "hash-ns"},
 			}
 
-			hash1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			r1, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
 
 			nsCM.Data["sampling-rate"] = "1.0"
 			Expect(k8sClient.Update(ctx, nsCM)).To(Succeed())
 
-			hash2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
-			Expect(hash1).NotTo(Equal(hash2))
+			r2, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			Expect(r1.Hash).NotTo(Equal(r2.Hash))
 		})
 	})
 
@@ -227,10 +243,10 @@ var _ = Describe("AgentRuntime Config", func() {
 				TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "def-diff"},
 			}
 
-			specHash, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
+			specResult, _ := ComputeConfigHash(ctx, k8sClient, namespace, spec)
 			defaultsHash, _ := ComputeDefaultsOnlyHash(ctx, k8sClient, namespace)
 
-			Expect(specHash).NotTo(Equal(defaultsHash))
+			Expect(specResult.Hash).NotTo(Equal(defaultsHash))
 		})
 
 		It("should be deterministic", func() {
@@ -269,7 +285,7 @@ var _ = Describe("AgentRuntime Config", func() {
 				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "cr-collector:4317", Protocol: agentv1alpha1.TraceProtocolGRPC},
 			}
 
-			resolved := resolveConfig(ctx, k8sClient, namespace, spec)
+			resolved, _ := resolveConfig(ctx, k8sClient, namespace, spec)
 
 			// CR overrides
 			Expect(resolved.Type).To(Equal("agent"))
@@ -292,7 +308,7 @@ var _ = Describe("AgentRuntime Config", func() {
 		})
 
 		It("should return defaults only when spec is nil", func() {
-			resolved := resolveConfig(ctx, k8sClient, namespace, nil)
+			resolved, _ := resolveConfig(ctx, k8sClient, namespace, nil)
 
 			Expect(resolved.Type).To(BeEmpty())
 			Expect(resolved.TrustDomain).To(BeEmpty())
@@ -311,7 +327,7 @@ var _ = Describe("AgentRuntime Config", func() {
 				Trace:     &agentv1alpha1.TraceSpec{Endpoint: "cr-collector:4317"},
 			}
 
-			resolved := resolveConfig(ctx, k8sClient, namespace, spec)
+			resolved, _ := resolveConfig(ctx, k8sClient, namespace, spec)
 
 			// CR trace endpoint is in structured field
 			Expect(resolved.Trace).NotTo(BeNil())
@@ -323,15 +339,120 @@ var _ = Describe("AgentRuntime Config", func() {
 	})
 
 	Context("readNamespaceDefaults", func() {
-		It("should handle multiple ConfigMaps by using the first one", func() {
+		It("should handle multiple ConfigMaps by using the first one and returning a warning", func() {
 			cm1 := createNamespaceDefaults(ctx, "multi-defaults-1", namespace, map[string]string{"key": "from-first"})
 			defer func() { _ = k8sClient.Delete(ctx, cm1) }()
 
 			cm2 := createNamespaceDefaults(ctx, "multi-defaults-2", namespace, map[string]string{"key": "from-second"})
 			defer func() { _ = k8sClient.Delete(ctx, cm2) }()
 
-			result := readNamespaceDefaults(ctx, k8sClient, namespace)
-			Expect(result["key"]).NotTo(BeEmpty())
+			data, warning := readNamespaceDefaults(ctx, k8sClient, namespace)
+			Expect(data["key"]).NotTo(BeEmpty())
+			Expect(warning).To(ContainSubstring("multiple namespace defaults ConfigMaps found"))
+			Expect(warning).To(ContainSubstring("multi-defaults-"))
+		})
+
+		It("should return no warning when exactly one ConfigMap exists", func() {
+			cm := createNamespaceDefaults(ctx, "single-defaults", namespace, map[string]string{"key": "value"})
+			defer func() { _ = k8sClient.Delete(ctx, cm) }()
+
+			data, warning := readNamespaceDefaults(ctx, k8sClient, namespace)
+			Expect(data["key"]).To(Equal("value"))
+			Expect(warning).To(BeEmpty())
+		})
+
+		It("should return no warning when no ConfigMap exists", func() {
+			data, warning := readNamespaceDefaults(ctx, k8sClient, "nonexistent-ns")
+			Expect(data).To(BeEmpty())
+			Expect(warning).To(BeEmpty())
+		})
+	})
+
+	Context("ConfigResolved condition with warnings", func() {
+		It("should surface a ConfigWarning condition when multiple namespace defaults exist", func() {
+			dep := newTestDeployment("warn-deploy", namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			rt := &agentv1alpha1.AgentRuntime{
+				ObjectMeta: metav1.ObjectMeta{Name: "warn-rt", Namespace: namespace},
+				Spec: agentv1alpha1.AgentRuntimeSpec{
+					Type:      agentv1alpha1.RuntimeTypeAgent,
+					TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "warn-deploy"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			cm1 := createNamespaceDefaults(ctx, "warn-defaults-1", namespace, map[string]string{"k": "v1"})
+			defer func() { _ = k8sClient.Delete(ctx, cm1) }()
+			cm2 := createNamespaceDefaults(ctx, "warn-defaults-2", namespace, map[string]string{"k": "v2"})
+			defer func() { _ = k8sClient.Delete(ctx, cm2) }()
+
+			r := &AgentRuntimeReconciler{Client: k8sClient, Scheme: scheme.Scheme}
+			nn := types.NamespacedName{Name: "warn-rt", Namespace: namespace}
+
+			// Reconcile: finalizer
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			// Reconcile: apply config
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &agentv1alpha1.AgentRuntime{}
+			Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
+
+			// Should still be Active (warning doesn't block reconciliation)
+			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.RuntimePhaseActive))
+
+			// Should have ConfigResolved condition with warning
+			var configCond *metav1.Condition
+			for i := range updated.Status.Conditions {
+				if updated.Status.Conditions[i].Type == ConditionTypeConfigResolved {
+					configCond = &updated.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(configCond).NotTo(BeNil())
+			Expect(configCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(configCond.Reason).To(Equal("ConfigWarning"))
+			Expect(configCond.Message).To(ContainSubstring("multiple namespace defaults ConfigMaps found"))
+		})
+
+		It("should set ConfigResolved without warning when config is clean", func() {
+			dep := newTestDeployment("clean-deploy", namespace)
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dep) }()
+
+			rt := &agentv1alpha1.AgentRuntime{
+				ObjectMeta: metav1.ObjectMeta{Name: "clean-rt", Namespace: namespace},
+				Spec: agentv1alpha1.AgentRuntimeSpec{
+					Type:      agentv1alpha1.RuntimeTypeAgent,
+					TargetRef: agentv1alpha1.TargetRef{APIVersion: "apps/v1", Kind: "Deployment", Name: "clean-deploy"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, rt) }()
+
+			r := &AgentRuntimeReconciler{Client: k8sClient, Scheme: scheme.Scheme}
+			nn := types.NamespacedName{Name: "clean-rt", Namespace: namespace}
+
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &agentv1alpha1.AgentRuntime{}
+			Expect(k8sClient.Get(ctx, nn, updated)).To(Succeed())
+
+			var configCond *metav1.Condition
+			for i := range updated.Status.Conditions {
+				if updated.Status.Conditions[i].Type == ConditionTypeConfigResolved {
+					configCond = &updated.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(configCond).NotTo(BeNil())
+			Expect(configCond.Reason).To(Equal("ConfigResolved"))
+			Expect(configCond.Message).To(Equal("Configuration resolved successfully"))
 		})
 	})
 
