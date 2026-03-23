@@ -292,11 +292,6 @@ spec:
                           items:
                             type: string
                           type: array
-                        tags:
-                          description: A set of keywords describing the skill's capabilities.
-                          items:
-                            type: string
-                          type: array
                         parameters:
                           description: The parameters accepted by this skill.
                           items:
@@ -320,6 +315,11 @@ spec:
                                   "number", "boolean", "object", "array").
                                 type: string
                             type: object
+                          type: array
+                        tags:
+                          description: A set of keywords describing the skill's capabilities.
+                          items:
+                            type: string
                           type: array
                       type: object
                     type: array

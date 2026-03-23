@@ -294,7 +294,6 @@ type AgentSkill struct {
 	// +optional
 	Examples []string `json:"examples,omitempty"`
 
-	// InputModes are the media types this skill accepts
 	// The set of supported input media types for this skill, overriding the
 	// agent's defaults.
 	// +optional
