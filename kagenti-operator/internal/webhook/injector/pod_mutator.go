@@ -212,6 +212,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 
 	var builder *ContainerBuilder
 	var requiredVolumes []corev1.Volume
+	var resolved *ResolvedConfig
 
 	if currentGates.PerWorkloadConfigResolution {
 		// Resolved path: read namespace config and build literal env vars
@@ -226,7 +227,7 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		}
 
 		// arOverrides was already read above as a gate check.
-		resolved := ResolveConfig(currentConfig, nsConfig, arOverrides)
+		resolved = ResolveConfig(currentConfig, nsConfig, arOverrides)
 		builder = NewResolvedContainerBuilder(resolved)
 		requiredVolumes = BuildResolvedVolumes(spireEnabled, "")
 
@@ -292,6 +293,13 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		}
 	}
 
+	// Inject OTEL trace env vars into the user's (non-sidecar) containers.
+	// These come from the AgentRuntime spec.trace overrides and configure
+	// the agent's own telemetry (e.g., MLflow, LangChain, OpenTelemetry SDK).
+	if resolved != nil {
+		injectTraceEnvVars(podSpec, resolved)
+	}
+
 	mutatorLog.Info("Successfully mutated pod spec", "namespace", namespace, "crName", crName,
 		"containers", len(podSpec.Containers),
 		"initContainers", len(podSpec.InitContainers),
@@ -336,6 +344,55 @@ func (m *PodMutator) ensureServiceAccount(ctx context.Context, namespace, name s
 	}
 	mutatorLog.Info("Created ServiceAccount", "namespace", namespace, "name", name)
 	return nil
+}
+
+// sidecarContainerNames is the set of container names injected by the webhook.
+// Used to identify user containers when injecting trace env vars.
+// MAINTENANCE: Update this map when new sidecar containers are added.
+var sidecarContainerNames = map[string]bool{
+	EnvoyProxyContainerName:         true,
+	ProxyInitContainerName:          true,
+	SpiffeHelperContainerName:       true,
+	ClientRegistrationContainerName: true,
+	AuthBridgeContainerName:         true,
+}
+
+// injectTraceEnvVars adds OTEL trace env vars to all user (non-sidecar)
+// containers. Existing env vars are not overwritten — if the developer already
+// set OTEL_EXPORTER_OTLP_ENDPOINT, the webhook respects their value.
+func injectTraceEnvVars(podSpec *corev1.PodSpec, resolved *ResolvedConfig) {
+	var traceEnv []corev1.EnvVar
+	if resolved.TraceEndpoint != "" {
+		traceEnv = append(traceEnv, corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: resolved.TraceEndpoint})
+	}
+	if resolved.TraceProtocol != "" {
+		traceEnv = append(traceEnv, corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: resolved.TraceProtocol})
+	}
+	if resolved.TraceSamplingRate != nil {
+		traceEnv = append(traceEnv, corev1.EnvVar{Name: "OTEL_TRACES_SAMPLER_ARG", Value: fmt.Sprintf("%g", *resolved.TraceSamplingRate)})
+	}
+	if len(traceEnv) == 0 {
+		return
+	}
+
+	for i := range podSpec.Containers {
+		if sidecarContainerNames[podSpec.Containers[i].Name] {
+			continue
+		}
+		// Build a set of existing env var names to avoid overwriting
+		existing := make(map[string]bool, len(podSpec.Containers[i].Env))
+		for _, e := range podSpec.Containers[i].Env {
+			existing[e.Name] = true
+		}
+		for _, e := range traceEnv {
+			if !existing[e.Name] {
+				podSpec.Containers[i].Env = append(podSpec.Containers[i].Env, e)
+			}
+		}
+		mutatorLog.Info("Injected trace env vars into user container",
+			"container", podSpec.Containers[i].Name,
+			"vars", len(traceEnv))
+	}
 }
 
 func containerExists(containers []corev1.Container, name string) bool {

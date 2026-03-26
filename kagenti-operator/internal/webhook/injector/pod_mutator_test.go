@@ -618,3 +618,81 @@ func TestInjectAuthBridge_NilAnnotations(t *testing.T) {
 	}
 	t.Fatal("proxy-init container not found in initContainers")
 }
+
+func TestInjectTraceEnvVars_InjectsIntoUserContainers(t *testing.T) {
+	rate := 0.75
+	resolved := &ResolvedConfig{
+		TraceEndpoint:     "otel-collector:4317",
+		TraceProtocol:     "grpc",
+		TraceSamplingRate: &rate,
+	}
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "agent"},
+			{Name: EnvoyProxyContainerName},
+		},
+	}
+
+	injectTraceEnvVars(podSpec, resolved)
+
+	// User container should have trace env vars
+	agentEnv := make(map[string]string)
+	for _, e := range podSpec.Containers[0].Env {
+		agentEnv[e.Name] = e.Value
+	}
+	if v := agentEnv["OTEL_EXPORTER_OTLP_ENDPOINT"]; v != "otel-collector:4317" {
+		t.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT = %q, want otel-collector:4317", v)
+	}
+	if v := agentEnv["OTEL_EXPORTER_OTLP_PROTOCOL"]; v != "grpc" {
+		t.Errorf("OTEL_EXPORTER_OTLP_PROTOCOL = %q, want grpc", v)
+	}
+	if v := agentEnv["OTEL_TRACES_SAMPLER_ARG"]; v != "0.75" {
+		t.Errorf("OTEL_TRACES_SAMPLER_ARG = %q, want 0.75", v)
+	}
+
+	// Sidecar container should NOT have trace env vars
+	for _, e := range podSpec.Containers[1].Env {
+		if e.Name == "OTEL_EXPORTER_OTLP_ENDPOINT" {
+			t.Error("trace env vars should not be injected into sidecar containers")
+		}
+	}
+}
+
+func TestInjectTraceEnvVars_DoesNotOverwriteExisting(t *testing.T) {
+	resolved := &ResolvedConfig{
+		TraceEndpoint: "otel-collector:4317",
+	}
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name: "agent",
+				Env: []corev1.EnvVar{
+					{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "my-custom-endpoint:4317"},
+				},
+			},
+		},
+	}
+
+	injectTraceEnvVars(podSpec, resolved)
+
+	for _, e := range podSpec.Containers[0].Env {
+		if e.Name == "OTEL_EXPORTER_OTLP_ENDPOINT" && e.Value != "my-custom-endpoint:4317" {
+			t.Errorf("existing env var was overwritten: got %q, want my-custom-endpoint:4317", e.Value)
+		}
+	}
+}
+
+func TestInjectTraceEnvVars_NoOverrides(t *testing.T) {
+	resolved := &ResolvedConfig{}
+	podSpec := &corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "agent"},
+		},
+	}
+
+	injectTraceEnvVars(podSpec, resolved)
+
+	if len(podSpec.Containers[0].Env) != 0 {
+		t.Errorf("expected no env vars injected, got %d", len(podSpec.Containers[0].Env))
+	}
+}
