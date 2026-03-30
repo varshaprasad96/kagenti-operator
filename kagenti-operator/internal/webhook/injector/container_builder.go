@@ -31,9 +31,9 @@ var builderLog = logf.Log.WithName("container-builder")
 
 const (
 	// Container names for AuthBridge sidecars
-	EnvoyProxyContainerName  = "envoy-proxy"
-	ProxyInitContainerName   = "proxy-init"
-	AuthBridgeContainerName  = "authbridge"
+	EnvoyProxyContainerName = "envoy-proxy"
+	ProxyInitContainerName  = "proxy-init"
+	AuthBridgeContainerName = "authbridge"
 
 	// Client registration container configuration
 	// Keep in sync with AuthBridge/client-registration/Dockerfile
@@ -364,7 +364,6 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 	} else {
 		env = b.buildEnvoyProxyEnvLegacy()
 	}
-
 
 	return corev1.Container{
 		Name:            EnvoyProxyContainerName,

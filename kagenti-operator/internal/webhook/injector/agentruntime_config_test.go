@@ -154,6 +154,80 @@ func TestReadAgentRuntimeOverrides_PartialOverrides(t *testing.T) {
 	}
 }
 
+func TestReadAgentRuntimeOverrides_MatchesByReplicaSetName(t *testing.T) {
+	scheme := newAgentRuntimeScheme()
+
+	// AgentRuntime targets the Deployment name "my-agent"
+	cr := &agentv1alpha1.AgentRuntime{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-agent-runtime",
+			Namespace: "ns1",
+		},
+		Spec: agentv1alpha1.AgentRuntimeSpec{
+			Type: agentv1alpha1.RuntimeTypeAgent,
+			TargetRef: agentv1alpha1.TargetRef{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "my-agent",
+			},
+			Trace: &agentv1alpha1.TraceSpec{
+				Endpoint: "http://otel:4317",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cr).Build()
+
+	// Webhook passes the ReplicaSet name (e.g. "my-agent-7d4f8b9c5")
+	overrides, err := ReadAgentRuntimeOverrides(context.Background(), fakeClient, "ns1", "my-agent-7d4f8b9c5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if overrides == nil {
+		t.Fatal("expected non-nil overrides when matching by ReplicaSet name")
+	}
+	if overrides.TraceEndpoint == nil || *overrides.TraceEndpoint != "http://otel:4317" {
+		t.Errorf("TraceEndpoint = %v, want http://otel:4317", overrides.TraceEndpoint)
+	}
+}
+
+func TestReadAgentRuntimeOverrides_MatchesByMultiHyphenReplicaSetName(t *testing.T) {
+	scheme := newAgentRuntimeScheme()
+
+	// Deployment name has multiple hyphens: "api-server-prod"
+	cr := &agentv1alpha1.AgentRuntime{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "api-server-prod-runtime",
+			Namespace: "ns1",
+		},
+		Spec: agentv1alpha1.AgentRuntimeSpec{
+			Type: agentv1alpha1.RuntimeTypeAgent,
+			TargetRef: agentv1alpha1.TargetRef{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Name:       "api-server-prod",
+			},
+			Trace: &agentv1alpha1.TraceSpec{
+				Endpoint: "http://otel:4317",
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cr).Build()
+
+	// ReplicaSet name: "api-server-prod-7d4f8b9c5"
+	overrides, err := ReadAgentRuntimeOverrides(context.Background(), fakeClient, "ns1", "api-server-prod-7d4f8b9c5")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if overrides == nil {
+		t.Fatal("expected non-nil overrides for multi-hyphen Deployment name")
+	}
+	if overrides.TraceEndpoint == nil || *overrides.TraceEndpoint != "http://otel:4317" {
+		t.Errorf("TraceEndpoint = %v, want http://otel:4317", overrides.TraceEndpoint)
+	}
+}
+
 func TestReadAgentRuntimeOverrides_NoTargetRefMatch(t *testing.T) {
 	scheme := newAgentRuntimeScheme()
 

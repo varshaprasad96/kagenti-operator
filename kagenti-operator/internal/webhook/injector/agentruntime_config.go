@@ -18,6 +18,7 @@ package injector
 
 import (
 	"context"
+	"strings"
 
 	agentv1alpha1 "github.com/kagenti/operator/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -50,6 +51,13 @@ type AgentRuntimeOverrides struct {
 // ReadAgentRuntimeOverrides reads the AgentRuntime CR for a given workload
 // using typed access. It lists AgentRuntimes in the namespace and finds the
 // one whose spec.targetRef.name matches workloadName.
+//
+// At Pod CREATE time the webhook derives the workload name from GenerateName,
+// which yields the ReplicaSet name (e.g. "myapp-7d4f8b9c5") not the Deployment
+// name ("myapp"). The AgentRuntime CR's targetRef.name is the Deployment name.
+// To bridge this, we first try an exact match, then try matching after stripping
+// the pod-template-hash suffix (last "-<hash>" segment) from the workload name.
+//
 // Returns (nil, nil) if no matching AgentRuntime CR is found.
 func ReadAgentRuntimeOverrides(ctx context.Context, c client.Reader, namespace, workloadName string) (*AgentRuntimeOverrides, error) {
 	list := &agentv1alpha1.AgentRuntimeList{}
@@ -60,20 +68,26 @@ func ReadAgentRuntimeOverrides(ctx context.Context, c client.Reader, namespace, 
 		return nil, nil
 	}
 
+	// Derive the Deployment name by stripping the pod-template-hash suffix.
+	// ReplicaSet names follow the pattern "<deployment>-<pod-template-hash>".
+	deploymentName := workloadName
+	if idx := strings.LastIndex(workloadName, "-"); idx > 0 {
+		deploymentName = workloadName[:idx]
+	}
+
 	// Find the AgentRuntime whose spec.targetRef.name matches the workload
 	for i := range list.Items {
 		rt := &list.Items[i]
-		if rt.Spec.TargetRef.Name != workloadName {
-			continue
+		if rt.Spec.TargetRef.Name == workloadName || rt.Spec.TargetRef.Name == deploymentName {
+			arConfigLog.Info("Found matching AgentRuntime CR",
+				"namespace", namespace, "crName", rt.Name,
+				"targetRef.name", rt.Spec.TargetRef.Name, "derivedFrom", workloadName)
+			return extractOverrides(rt), nil
 		}
-
-		arConfigLog.Info("Found matching AgentRuntime CR",
-			"namespace", namespace, "crName", rt.Name, "targetRef.name", workloadName)
-		return extractOverrides(rt), nil
 	}
 
 	arConfigLog.V(1).Info("No AgentRuntime CR targets this workload",
-		"namespace", namespace, "workloadName", workloadName)
+		"namespace", namespace, "workloadName", workloadName, "deploymentName", deploymentName)
 	return nil, nil
 }
 
